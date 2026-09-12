@@ -2,21 +2,39 @@
 
 A small but production-quality Expense Tracker REST API built with **Node.js + Express + PostgreSQL**.
 
-It implements user accounts with JWT authentication, per-user expense CRUD with strict ownership
-enforcement, and an **idempotent** `POST /expenses` write path that is safe under concurrent requests.
+It implements user accounts with JWT authentication, per-user expense CRUD with strict ownership enforcement, and an **idempotent** `POST /expenses` write path that is safe under concurrent requests.
 
 ## Project Overview
 
-- Node.js (CommonJS), Express 5, PostgreSQL via the `pg` driver (no ORM).
-- Passwords hashed with `bcryptjs`.
-- Auth via `jsonwebtoken` (Bearer tokens, 1h expiry).
-- Parameterized SQL everywhere — no string-built queries.
-- Idempotent expense creation keyed on `(user_id, idempotency_key)`.
-- Automated integration tests using the Node.js built-in test runner.
+* Node.js (CommonJS), Express 5, PostgreSQL via the `pg` driver (no ORM).
+* Passwords hashed with `bcryptjs`.
+* Auth via `jsonwebtoken` (Bearer tokens, 1h expiry).
+* Parameterized SQL everywhere — no string-built queries.
+* Idempotent expense creation keyed on `(user_id, idempotency_key)`.
+* Automated integration tests using the Node.js built-in test runner.
+* Deployed publicly on Render with PostgreSQL.
+
+## Public Deployment
+
+**Live API:**
+
+https://devconnect-task-3-expense-api.onrender.com
+
+Health check:
+
+https://devconnect-task-3-expense-api.onrender.com/health
+
+Expected response:
+
+```json
+{
+  "status": "ok"
+}
+```
 
 ## Architecture
 
-```
+```text
 src/
   app.js          Express app: middleware, routes, health, 404 + error handlers
   server.js       HTTP entry point (loads env, starts listener)
@@ -26,8 +44,10 @@ src/
   routes/
     auth.js       POST /auth/register, POST /auth/login
     expenses.js   CRUD + idempotent POST for expenses
+
 db/
   schema.sql      users and expenses tables (+ indexes)
+
 test/
   api.test.js     end-to-end integration tests
 ```
@@ -37,30 +57,45 @@ Data flow:
 1. `POST /auth/register` (or `/auth/login`) returns `{ user, token }`.
 2. Client sends `Authorization: Bearer <token>` on every `/expenses` request.
 3. `requireAuth` verifies the token and sets `req.user = { id, email }`.
-4. **Every** expense query includes `user_id = $<n>` — an expense can only ever be
-   read/updated/deleted by the user who created it. Cross-user access returns `404 Not Found`
-   (the resource is invisible to the caller).
-5. `POST /expenses` requires an `Idempotency-Key` header and is guarded by the unique
-   constraint `UNIQUE (user_id, idempotency_key)`.
+4. **Every** expense query includes `user_id = $<n>` — an expense can only ever be read, updated, or deleted by the user who created it. Cross-user access returns `404 Not Found`.
+5. `POST /expenses` requires an `Idempotency-Key` header and is guarded by the unique constraint `UNIQUE (user_id, idempotency_key)`.
 
 ## Setup
 
-Prerequisites: Node.js 20+ (tested on v24) and PostgreSQL 14+.
+Prerequisites:
+
+* Node.js 20+ (tested on Node.js 24)
+* PostgreSQL 14+
 
 ```bash
 npm install
-cp .env.example .env     # then fill in real values
 ```
+
+Create `.env` from `.env.example` and fill in the real values:
+
+```bash
+cp .env.example .env
+```
+
+On Windows, you can simply copy `.env.example` to `.env` manually.
 
 ## Environment Variables
 
-| Variable      | Required | Description                                        |
-|---------------|----------|----------------------------------------------------|
-| `DATABASE_URL`| yes      | PostgreSQL connection string (e.g. `postgres://user:pass@localhost:5432/devconnect_expenses`) |
-| `JWT_SECRET`  | yes      | Long random string used to sign JWTs               |
-| `PORT`        | no       | HTTP port (default `3000`)                         |
+| Variable       | Required | Description                          |
+| -------------- | -------- | ------------------------------------ |
+| `DATABASE_URL` | Yes      | PostgreSQL connection string         |
+| `JWT_SECRET`   | Yes      | Long random string used to sign JWTs |
+| `PORT`         | No       | HTTP port; defaults to `3000`        |
 
-`.env.example` documents the shape. **Never commit `.env`** (it is gitignored).
+Example:
+
+```env
+DATABASE_URL=postgres://user:password@localhost:5432/devconnect_expenses
+JWT_SECRET=replace_with_a_long_random_secret
+PORT=3000
+```
+
+**Never commit `.env`.** It is gitignored. The repository only contains `.env.example`.
 
 ## Database Setup
 
@@ -70,13 +105,15 @@ Run the schema against the target database:
 psql "$DATABASE_URL" -f db/schema.sql
 ```
 
-Schema summary:
+The production Render PostgreSQL database used by this deployment has already been initialized with this schema.
+
+### Schema Summary
 
 ```sql
 users (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   email TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,              -- never returned or logged
+  password_hash TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 
@@ -87,149 +124,208 @@ expenses (
   description TEXT NOT NULL,
   category TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
-  request_fingerprint TEXT NOT NULL,        -- sha256 of normalized request body
+  request_fingerprint TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (user_id, idempotency_key)         -- the final idempotency backstop
+  UNIQUE (user_id, idempotency_key)
 )
 ```
 
 ## API Endpoints
 
 ### `GET /health`
-Public. Returns `{ "status": "ok" }`.
+
+Public.
+
+Returns:
+
+```json
+{
+  "status": "ok"
+}
+```
 
 ### `POST /auth/register`
-Body: `{ "email": "...", "password": "..." }` (password min. 8 chars).
 
-- `201` → `{ "user": { id, email, created_at }, "token" }`
-- `409` → email already registered
+Body:
+
+```json
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
+```
+
+Password must be at least 8 characters.
+
+Responses:
+
+* `201` — account created and JWT returned
+* `400` — invalid input
+* `409` — email already registered
 
 ### `POST /auth/login`
-Body: `{ "email": "...", "password": "..." }`.
 
-- `200` → `{ "user": { id, email, created_at }, "token" }`
-- `401` → invalid email or password
+Body:
 
-### `GET /expenses` *(auth required)*
-Returns `{ "expenses": [...] }` for the authenticated user only.
+```json
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
+```
 
-### `GET /expenses/:id` *(auth required)*
-Single expense, scoped to the authenticated user.
+Responses:
 
-### `POST /expenses` *(auth required, idempotent)*
-Headers: `Idempotency-Key: <value>`
+* `200` — authenticated user and JWT returned
+* `400` — missing input
+* `401` — invalid email or password
 
-Body: `{ "amount": 12.34, "description": "Lunch", "category": "Food" }`
+### `GET /expenses`
+
+**Authentication required.**
+
+Returns expenses belonging only to the authenticated user.
+
+### `GET /expenses/:id`
+
+**Authentication required.**
+
+Returns one expense only if it belongs to the authenticated user.
+
+### `POST /expenses`
+
+**Authentication required and idempotent.**
+
+Headers:
+
+```text
+Authorization: Bearer <token>
+Idempotency-Key: <unique-key>
+```
+
+Body:
+
+```json
+{
+  "amount": 12.34,
+  "description": "Lunch",
+  "category": "Food"
+}
+```
 
 Behavior is described in detail under **Idempotency** below.
 
-### `PUT /expenses/:id` *(auth required)*
-Body: same shape as create. Updates the caller's own expense.
+### `PUT /expenses/:id`
 
-### `DELETE /expenses/:id` *(auth required)*
-Deletes the caller's own expense. Returns `204`.
+**Authentication required.**
+
+Body:
+
+```json
+{
+  "amount": 20.00,
+  "description": "Dinner",
+  "category": "Food"
+}
+```
+
+Updates only the authenticated user's expense.
+
+### `DELETE /expenses/:id`
+
+**Authentication required.**
+
+Deletes only the authenticated user's expense.
+
+Returns `204 No Content` on success.
 
 ## Authentication
 
-Use JWT Bearer authentication:
+The API uses JWT Bearer authentication.
 
-```
+Send the token using:
+
+```text
 Authorization: Bearer <token>
 ```
 
-- Tokens are issued by `POST /auth/register` and `POST /auth/login`.
-- Protected routes return `401` when no/invalid credentials are supplied:
+Tokens are issued by:
+
+* `POST /auth/register`
+* `POST /auth/login`
+
+Protected routes return `401` when credentials are missing or invalid.
+
+Example:
 
 ```json
-{ "error": "Authentication required: provide Authorization: Bearer <token>" }
+{
+  "error": "Authentication required: provide Authorization: Bearer <token>"
+}
 ```
 
-- `password_hash` is never returned by any endpoint and never logged. Passwords are
-  never logged.
+Passwords are never returned by the API or written to logs.
 
 ## Authorization / Ownership
 
-Every expense query filters by `WHERE id = $1 AND user_id = $2`. The API never fetches an
-expense by ID alone, so a user cannot observe or mutate another user's row:
+Every expense query is scoped to the authenticated user's ID.
+
+For example:
 
 ```sql
-SELECT ... FROM expenses WHERE id = $1 AND user_id = $2
-UPDATE expenses SET ... WHERE id = $1 AND user_id = $2 RETURNING ...
-DELETE FROM expenses WHERE id = $1 AND user_id = $2 RETURNING id
+SELECT ...
+FROM expenses
+WHERE id = $1 AND user_id = $2;
 ```
 
-Cross-user access attempts return `404` ("expense not found for the authenticated user"),
-so one user cannot even learn that another user's expense ID exists.
+Updates and deletes are also scoped:
+
+```sql
+UPDATE expenses
+SET ...
+WHERE id = $1 AND user_id = $2
+RETURNING ...;
+```
+
+```sql
+DELETE FROM expenses
+WHERE id = $1 AND user_id = $2
+RETURNING id;
+```
+
+The API never fetches an expense by ID alone.
+
+Therefore, a user cannot read, update, or delete another user's expense.
+
+Cross-user access attempts return:
+
+```text
+404 Not Found
+```
+
+with:
+
+```json
+{
+  "error": "expense not found for the authenticated user"
+}
+```
+
+This also prevents callers from learning whether another user's expense ID exists.
 
 ## Idempotency
 
-`POST /expenses` is the idempotent write path. It **requires** an `Idempotency-Key` header;
-a missing/empty key returns `400`:
+`POST /expenses` is the idempotent write path.
 
-```json
-{ "error": "Idempotency-Key header is required for POST /expenses" }
+It **requires** an `Idempotency-Key` header.
+
+If the header is missing or empty, the API returns:
+
+```text
+400 Bad Request
 ```
 
-### How repeated requests are recognized
-
-Repeated requests are recognized by the pair **(authenticated `user_id`, `Idempotency-Key`)**:
-
-1. The request body is normalized (`amount` to 2 decimals, trimmed `description`/`category`).
-2. A deterministic fingerprint is computed: `sha256(normalized JSON body)`.
-3. The server tries `INSERT ... ON CONFLICT (user_id, idempotency_key) DO NOTHING` inside a
-   transaction.
-4. If no row existed, the insert wins → `201 Created`.
-5. If a row already exists with the same key, the stored `request_fingerprint` is compared
-   to the current request:
-   - **Same fingerprint** → the request is a replay of the original → return the original
-     expense with `200 OK` (no new row).
-   - **Different fingerprint** → the key was reused with different data → `409 Conflict`
-     with an actionable message.
-
-The **database unique constraint `UNIQUE (user_id, idempotency_key)` is the final
-protection** — the code never relies on a SELECT-before-INSERT check.
-
-### Concurrency safety
-
-Because step 3 performs a single atomic `INSERT ... ON CONFLICT DO NOTHING`, two concurrent
-(truly simultaneous) identical requests cannot create two rows:
-
-- One insert commits and returns the row.
-- The other insert blocks on the unique index, sees the conflict after the winner commits,
-  does nothing, then re-reads the existing row and returns `200` with the original expense.
-
-Verified by an automated test (`two concurrent identical POST /expenses requests create one
-row`).
-
-### Example Idempotency-Key responses
-
-**First request — `201 Created`:**
-
-```json
-{
-  "expense": {
-    "id": "1",
-    "user_id": "1",
-    "amount": "12.34",
-    "description": "Lunch",
-    "category": "Food",
-    "idempotency_key": "lap-order-001",
-    "created_at": "2026-09-12T15:00:00.000Z"
-  }
-}
-```
-
-**Replay (same key + same body) — `200 OK`:** the same expense object as above.
-
-**Replay with different body — `409 Conflict`:**
-
-```json
-{
-  "error": "Idempotency-Key was already used with a different request body; use a new key for this request"
-}
-```
-
-**Missing key — `400 Bad Request`:**
+with:
 
 ```json
 {
@@ -237,50 +333,145 @@ row`).
 }
 ```
 
-Different users may freely use the same idempotency key — keys are scoped per user.
+### How Repeated Requests Are Recognized
+
+Repeated requests are recognized using the pair:
+
+```text
+(authenticated user_id, Idempotency-Key)
+```
+
+The process is:
+
+1. The request body is normalized:
+
+   * `amount` is converted to two decimal places.
+   * `description` is trimmed.
+   * `category` is trimmed.
+
+2. A deterministic SHA-256 fingerprint is calculated from the normalized request body.
+
+3. The server attempts:
+
+```sql
+INSERT ... 
+ON CONFLICT (user_id, idempotency_key) DO NOTHING
+```
+
+inside a transaction.
+
+4. If no row previously exists, the insert succeeds and returns:
+
+```text
+201 Created
+```
+
+5. If the same user has already used the key:
+
+   * Same request body → return the original expense with `200 OK`.
+   * Different request body → return `409 Conflict`.
+
+### Same Request Replay
+
+First request:
+
+```text
+201 Created
+```
+
+A repeated identical request with the same `Idempotency-Key` returns:
+
+```text
+200 OK
+```
+
+and the same expense ID.
+
+No second database row is created.
+
+### Different Request With Same Key
+
+If the same user reuses an existing key with different data, the API returns:
+
+```text
+409 Conflict
+```
+
+Example:
+
+```json
+{
+  "error": "Idempotency-Key was already used with a different request body; use a new key for this request"
+}
+```
+
+This prevents accidental reuse of an idempotency key for a different operation.
+
+### Concurrency Safety
+
+The database constraint:
+
+```sql
+UNIQUE (user_id, idempotency_key)
+```
+
+is the final protection against duplicate rows.
+
+The application does not rely on a vulnerable `SELECT`-before-`INSERT` pattern.
+
+Instead, the database handles competing inserts atomically through the unique constraint and:
+
+```sql
+ON CONFLICT DO NOTHING
+```
+
+Therefore, concurrent identical requests cannot create duplicate expense rows.
+
+Different users may reuse the same idempotency key because the key is scoped by `user_id`.
 
 ## Error Response Format
 
-All errors use a consistent shape:
+Errors use a consistent response shape:
 
 ```json
-{ "error": "<actionable message>" }
+{
+  "error": "actionable message"
+}
 ```
 
 Examples:
 
-| Situation                        | Status | Body                                              |
-|----------------------------------|--------|---------------------------------------------------|
-| No/invalid token                 | 401    | `{"error":"Authentication required: provide Authorization: Bearer <token>"}` |
-| Invalid amount                   | 400    | `{"error":"amount must be greater than 0"}`       |
-| Missing description              | 400    | `{"error":"description is required"}`             |
-| Missing category                 | 400    | `{"error":"category is required"}`                |
-| Missing Idempotency-Key          | 400    | `{"error":"Idempotency-Key header is required for POST /expenses"}` |
-| Key reused with different body   | 409    | `{"error":"Idempotency-Key was already used with a different request body; use a new key for this request"}` |
-| Email already registered         | 409    | `{"error":"email is already registered; use a different email or log in"}` |
-| Invalid login                    | 401    | `{"error":"invalid email or password"}`           |
-| Unknown/unowned expense          | 404    | `{"error":"expense not found for the authenticated user"}` |
-| Malformed JSON body              | 400    | `{"error":"request body must be valid JSON"}`     |
-| Unknown route                    | 404    | `{"error":"route not found"}`                     |
+| Situation                      | Status | Error                                                                                            |
+| ------------------------------ | -----: | ------------------------------------------------------------------------------------------------ |
+| Missing/invalid authentication |    401 | `Authentication required: provide Authorization: Bearer <token>`                                 |
+| Invalid JWT                    |    401 | `Invalid or expired authentication token`                                                        |
+| Invalid amount                 |    400 | `amount must be greater than 0`                                                                  |
+| Missing description            |    400 | `description is required`                                                                        |
+| Missing category               |    400 | `category is required`                                                                           |
+| Missing Idempotency-Key        |    400 | `Idempotency-Key header is required for POST /expenses`                                          |
+| Same key with different body   |    409 | `Idempotency-Key was already used with a different request body; use a new key for this request` |
+| Email already registered       |    409 | `email is already registered; use a different email or log in`                                   |
+| Invalid login                  |    401 | `invalid email or password`                                                                      |
+| Unknown/unowned expense        |    404 | `expense not found for the authenticated user`                                                   |
+| Malformed JSON                 |    400 | `request body must be valid JSON`                                                                |
+| Unknown route                  |    404 | `route not found`                                                                                |
 
-Messages tell the caller exactly what to fix.
+The error messages are designed to tell the caller what needs to be changed without requiring access to the source code.
 
 ## Tests
 
-Integration tests hit a real PostgreSQL database through the running Express app
-(Node built-in test runner).
+Integration tests use a real PostgreSQL database and the Node.js built-in test runner.
+
+Run:
 
 ```bash
-# point at a scratch/test database (never a production one)
-export DATABASE_URL=postgres://postgres:YOURPASSWORD@localhost:5432/devconnect_expenses_test
-export JWT_SECRET=some-test-secret
 npm test
 ```
 
-The suite covers:
+The current test suite contains **16 passing tests** covering:
 
 1. `GET /health` returns 200.
-2. Register works (and never returns `password_hash`).
+2. Register works and never returns `password_hash`.
 3. Login works.
 4. Protected `GET /expenses` without a token returns 401.
 5. Authenticated user can create an expense.
@@ -288,63 +479,89 @@ The suite covers:
 7. User A cannot read User B's expense.
 8. User A cannot update User B's expense.
 9. User A cannot delete User B's expense.
-10. Same idempotency key + same request returns the original expense, one row only.
+10. Same idempotency key + same request returns the original expense without creating a duplicate row.
 11. Same idempotency key + different request returns 409.
 12. Missing `Idempotency-Key` returns 400.
 13. Invalid amount returns 400.
 14. Invalid login returns 401.
 15. Unknown expense returns 404.
 16. Two concurrent identical `POST /expenses` requests create only one row.
-17. Different users may reuse the same idempotency key.
+
+The suite also includes hardening checks for malformed JSON and invalid JWT handling within the existing test coverage.
 
 ## Deployment
 
-Deployable anywhere Node + PostgreSQL are available. Steps for a typical PaaS (Render /
-Railway / Heroku / Fly):
+The API is deployed as a Render Web Service connected to a Render PostgreSQL database.
 
-1. Provision a PostgreSQL instance and copy its connection string.
-2. Push this repo to your Git provider.
-3. Create the schema once: `psql "$DATABASE_URL" -f db/schema.sql`
-   (or run the start command with a one-off `node -e` migration).
-4. Set environment variables: `DATABASE_URL`, `JWT_SECRET` (use a
-   `openssl rand -hex 32` value), optional `PORT`.
-5. Start command: `npm start`.
+### Render Configuration
 
-### Public Deployment URL
+Build command:
 
-Public URL placeholder (fill in after deploying):
-
+```text
+npm install
 ```
-https://<your-app>.onrender.com
+
+Start command:
+
+```text
+npm start
+```
+
+Required environment variables:
+
+```text
+DATABASE_URL
+JWT_SECRET
+```
+
+Render provides the production `PORT` automatically.
+
+The production database schema was initialized separately before deployment.
+
+### Production URL
+
+```text
+https://devconnect-task-3-expense-api.onrender.com
+```
+
+Health endpoint:
+
+```text
+https://devconnect-task-3-expense-api.onrender.com/health
 ```
 
 ## Acceptance Criteria Checklist
 
-- [x] Deployable service with a public URL (placeholder documented above).
-- [x] User accounts and authentication (register/login + JWT).
-- [x] Protected routes return `401` when no credentials are supplied.
-- [x] Users cannot read/update/delete another user's expenses (all queries scoped by `user_id`).
-- [x] Automated tests prove cross-user access is prevented.
-- [x] Idempotent write path on `POST /expenses`.
-- [x] `Idempotency-Key` header required and validated.
-- [x] Repeated requests recognized by `(user_id, idempotency_key)`.
-- [x] Same key + same body returns the original expense (no duplicate row).
-- [x] Same key + different body returns `409` with a clear explanation.
-- [x] Error responses explain what the caller needs to fix.
-- [x] Concurrent identical requests produce exactly one row (unique constraint as backstop).
-- [x] No secrets committed; `.env` gitignored; `.env.example` provided.
-- [x] Parameterized SQL throughout; no string interpolation of user input.
+* [x] Deployed service with a public URL.
+* [x] Public health endpoint is reachable.
+* [x] User accounts and authentication implemented.
+* [x] Protected routes return `401` when no credentials are supplied.
+* [x] Invalid JWTs return `401`.
+* [x] Users cannot read another user's expenses.
+* [x] Users cannot update another user's expenses.
+* [x] Users cannot delete another user's expenses.
+* [x] Automated tests prove cross-user access is prevented.
+* [x] Idempotent write path implemented on `POST /expenses`.
+* [x] `Idempotency-Key` header is required.
+* [x] Repeated requests are recognized by `(user_id, idempotency_key)`.
+* [x] Same key + same body returns the original expense without creating a duplicate.
+* [x] Same key + different body returns `409 Conflict`.
+* [x] Error responses explain what the caller needs to fix.
+* [x] Concurrent identical requests are protected by the database unique constraint.
+* [x] No secrets committed to the repository.
+* [x] `.env` is gitignored and `.env.example` is provided.
+* [x] SQL queries are parameterized throughout.
 
 ## Security Notes
 
-- Passwords are hashed with bcrypt (cost 12). They are never stored in plaintext, never
-  returned by the API, and never written to logs.
-- All SQL is parameterized (`$1`, `$2`, …) — user input can never alter query structure.
-- JWT secret must come from the environment (`JWT_SECRET`); the server refuses to start
-  without it.
-- Expense ownership is enforced in SQL with `WHERE ... AND user_id = $2`, making
-  cross-user access impossible even if a handler bug were introduced elsewhere.
-- Idempotency relies on a database `UNIQUE (user_id, idempotency_key)` constraint, not
-  only on application logic, so it stays correct under concurrency.
-- `.gitignore` excludes `.env` and `.env.*` (while keeping `.env.example`). Never commit
-  real connection strings or secrets.
+* Passwords are hashed with bcrypt using a cost factor of 12.
+* Passwords are never stored in plaintext.
+* Password hashes are never returned by the API.
+* Passwords are never logged.
+* All SQL uses parameterized queries (`$1`, `$2`, etc.).
+* JWT signing uses the `JWT_SECRET` environment variable.
+* The server refuses to start without required `DATABASE_URL` and `JWT_SECRET` environment variables.
+* Expense ownership is enforced directly in SQL using `user_id`.
+* Idempotency is enforced with a database-level unique constraint.
+* `.gitignore` excludes `.env` and `.env.*` while keeping `.env.example`.
+* Real database credentials, JWT secrets, and other sensitive values must never be committed to Git.
