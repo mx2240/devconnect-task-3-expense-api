@@ -142,6 +142,12 @@ test('user A cannot read, update, or delete user B expense', async () => {
 
   const read = await request('GET', `/expenses/${expenseId}`, { token: userA.token });
   assert.equal(read.status, 404);
+  const list = await request('GET', '/expenses', { token: userA.token });
+  assert.equal(list.status, 200);
+  assert.equal(
+    list.body.expenses.some((expense) => expense.id === expenseId),
+    false
+  );
 
   const update = await request('PUT', `/expenses/${expenseId}`, {
     token: userA.token,
