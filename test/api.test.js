@@ -203,6 +203,22 @@ test('missing Idempotency-Key returns 400', async () => {
   assert.match(response.body.error, /Idempotency-Key/);
 });
 
+test('POST /expenses rejects requests without an idempotency key', async () => {
+  const { token } = await register(`missing-key-${Date.now()}@example.com`);
+
+  const response = await request('POST', '/expenses', {
+    token,
+    body: {
+      amount: 25.50,
+      description: 'Missing key test',
+      category: 'Testing',
+    },
+  });
+
+  assert.equal(response.status, 400);
+  assert.match(response.body.error, /Idempotency-Key header is required/);
+});
+
 test('invalid amount returns 400', async () => {
   const { token } = await register(`bad-amount-${Date.now()}@example.com`);
   const response = await createExpense(token, 'bad-amount', { amount: 0 });
