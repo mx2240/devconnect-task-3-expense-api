@@ -293,8 +293,20 @@ All API responses use JSON unless otherwise stated.
 ## `GET /health`
 
 ### Authentication
+none.
 
-None.
+### Authentication quick example
+
+#### Register
+
+```http
+POST /auth/register
+Content-Type: application/json
+
+{
+  "email": "alice@example.com",
+  "password": "password123"
+}
 
 ### Input
 
